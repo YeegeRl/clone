@@ -13,11 +13,13 @@ SPEECH_URL = f"{BASE_URL}/audio/speech"
 TRANSCRIBE_URL = f"{BASE_URL}/audio/transcriptions"
 
 UPLOAD_MODELS = [
+    "IndexTeam/IndexTTS-2",
     "FunAudioLLM/CosyVoice2-0.5B",
     "fnlp/MOSS-TTSD-v0.5",
 ]
 
 TTS_MODELS = [
+    "IndexTeam/IndexTTS-2",
     "FunAudioLLM/CosyVoice2-0.5B",
     "fnlp/MOSS-TTSD-v0.5",
 ]
