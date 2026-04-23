@@ -9,12 +9,10 @@ import streamlit as st
 
 BASE_URL = "https://api.siliconflow.cn/v1"
 UPLOAD_URL = f"{BASE_URL}/uploads/audio/voice"
-VOICE_LIST_URL = f"{BASE_URL}/audio/voice/list"
 SPEECH_URL = f"{BASE_URL}/audio/speech"
 TRANSCRIBE_URL = f"{BASE_URL}/audio/transcriptions"
 
 UPLOAD_MODELS = [
-    
     "FunAudioLLM/CosyVoice2-0.5B",
     "fnlp/MOSS-TTSD-v0.5",
 ]
@@ -75,7 +73,6 @@ def transcribe_reference_audio(
 ) -> Tuple[bool, str]:
     """
     Use SiliconFlow transcription API to auto-recognize the reference audio text.
-    Docs indicate multipart/form-data with file + model, and file size <= 50MB / duration <= 1 hour.
     """
     try:
         files = {"file": (file_name, io.BytesIO(file_bytes))}
@@ -86,18 +83,6 @@ def transcribe_reference_audio(
         payload = resp.json()
         text = payload.get("text", "")
         return (True, text) if text else (False, f"转写成功但未返回 text：{payload}")
-    except Exception as exc:
-        return False, str(exc)
-
-
-@st.cache_data(ttl=30)
-def fetch_voice_list(api_key: str) -> Tuple[bool, Any]:
-    try:
-        resp = requests.get(VOICE_LIST_URL, headers=headers(api_key), timeout=60)
-        if resp.status_code >= 400:
-            return False, f"{resp.status_code}: {resp.text}"
-        payload = resp.json()
-        return True, payload.get("results", [])
     except Exception as exc:
         return False, str(exc)
 
@@ -161,15 +146,12 @@ with st.sidebar:
     st.write("API Key：", "已配置" if API_KEY else "未配置")
     st.write("上传接口：", "POST /v1/uploads/audio/voice")
     st.write("转写接口：", "POST /v1/audio/transcriptions")
-    st.write("列表接口：", "GET /v1/audio/voice/list")
     st.write("生成接口：", "POST /v1/audio/speech")
 
 if not API_KEY:
     st.error("未找到 SILICONFLOW_API_KEY。请在 Streamlit Cloud 的 Secrets 中配置。")
     st.stop()
 
-if "voices" not in st.session_state:
-    st.session_state.voices = []
 if "last_uri" not in st.session_state:
     st.session_state.last_uri = ""
 if "last_uploaded_model" not in st.session_state:
@@ -177,11 +159,12 @@ if "last_uploaded_model" not in st.session_state:
 if "reference_text" not in st.session_state:
     st.session_state.reference_text = ""
 
-tab_upload, tab_list, tab_generate = st.tabs(["上传参考音频", "音色列表", "生成语音"])
+tab_upload, tab_generate = st.tabs(["上传参考音频", "生成语音"])
 
 with tab_upload:
     st.subheader("上传参考音频")
     st.write("参考音频尽量选择干净、单人声、无背景音乐的 5 到 20 秒片段。转写文件需满足官方限制：时长不超过 1 小时、大小不超过 50MB。")
+
     upload_model = st.selectbox("上传模型", UPLOAD_MODELS, index=0)
     transcribe_model = st.selectbox("自动识别模型", TRANSCRIBE_MODELS, index=0)
     custom_name = st.text_input("customName", placeholder="例如：zhangsan_voice")
@@ -238,73 +221,27 @@ with tab_upload:
                 st.code(result, language="text")
                 st.session_state.last_uri = result
                 st.session_state.last_uploaded_model = upload_model
-                st.cache_data.clear()
             else:
                 st.error(f"上传失败：{result}")
 
-with tab_list:
-    st.subheader("音色列表")
-    col1, col2 = st.columns([1, 2])
-    with col1:
-        refresh = st.button("刷新列表", type="primary")
-    with col2:
-        st.caption("列表来自你的 SiliconFlow 账号下已上传的参考音频。")
-
-    if refresh or not st.session_state.voices:
-        ok, result = fetch_voice_list(API_KEY)
-        if ok:
-            st.session_state.voices = result
-            st.success(f"已加载 {len(result)} 条音色记录")
-        else:
-            st.error(f"获取列表失败：{result}")
-
-    voices = st.session_state.voices
-    if not voices:
-        st.info("当前没有音色记录，先去上传参考音频。")
-    else:
-        for idx, item in enumerate(voices, start=1):
-            with st.expander(f"{idx}. {item.get('customName', 'Unnamed')} | {item.get('model', '')}"):
-                st.write("customName：", item.get("customName", ""))
-                st.write("model：", item.get("model", ""))
-                st.write("text：", item.get("text", ""))
-                st.code(item.get("uri", ""), language="text")
-                if st.button("用这个音色生成", key=f"use_{idx}"):
-                    st.session_state.last_uri = item.get("uri", "")
-                    st.session_state.last_uploaded_model = item.get("model", UPLOAD_MODELS[0])
-                    st.toast("已把该音色填入生成区")
-
 with tab_generate:
     st.subheader("生成语音")
-    st.write("选择一个音色 URI，再输入你想让它说的话。")
-
-    voices = st.session_state.voices
-    display_map: Dict[str, Dict[str, Any]] = {}
-    options: List[str] = []
-
-    for item in voices:
-        label = f"{item.get('customName', 'Unnamed')} | {item.get('model', '')}"
-        options.append(label)
-        display_map[label] = item
-
-    if options:
-        selected_label = st.selectbox("选择已上传音色", options)
-        selected_voice = display_map[selected_label]
-        default_voice_uri = selected_voice.get("uri", "")
-        default_tts_model = selected_voice.get("model", TTS_MODELS[0]) or TTS_MODELS[0]
-    else:
-        default_voice_uri = st.session_state.last_uri
-        default_tts_model = st.session_state.last_uploaded_model or TTS_MODELS[0]
+    st.write("输入 voice URI，再输入你想让它说的话。")
 
     manual_voice_uri = st.text_input(
         "voice URI",
-        value=default_voice_uri,
+        value=st.session_state.last_uri,
         placeholder="speech:your-voice-name:xxx:xxx",
     )
+
     tts_model = st.selectbox(
         "TTS 模型",
         TTS_MODELS,
-        index=TTS_MODELS.index(default_tts_model) if default_tts_model in TTS_MODELS else 0,
+        index=TTS_MODELS.index(st.session_state.last_uploaded_model)
+        if st.session_state.last_uploaded_model in TTS_MODELS
+        else 0,
     )
+
     input_text = st.text_area("要合成的文本", height=160, placeholder="输入你想让声音说的话")
 
     c1, c2, c3 = st.columns(3)
