@@ -11,6 +11,7 @@ BASE_URL = "https://api.siliconflow.cn/v1"
 UPLOAD_URL = f"{BASE_URL}/uploads/audio/voice"
 VOICE_LIST_URL = f"{BASE_URL}/audio/voice/list"
 SPEECH_URL = f"{BASE_URL}/audio/speech"
+TRANSCRIBE_URL = f"{BASE_URL}/audio/transcriptions"
 
 UPLOAD_MODELS = [
     "IndexTeam/IndexTTS-2",
@@ -20,6 +21,11 @@ UPLOAD_MODELS = [
 TTS_MODELS = [
     "FunAudioLLM/CosyVoice2-0.5B",
     "fnlp/MOSS-TTSD-v0.5",
+]
+
+TRANSCRIBE_MODELS = [
+    "FunAudioLLM/SenseVoiceSmall",
+    "TeleAI/TeleSpeechASR",
 ]
 
 AUDIO_FORMATS = ["mp3", "wav", "opus", "pcm"]
@@ -39,8 +45,14 @@ def headers(api_key: str) -> Dict[str, str]:
     return {"Authorization": f"Bearer {api_key}"}
 
 
-def upload_reference_audio(api_key: str, model: str, custom_name: str, text: str,
-                           file_name: str, file_bytes: bytes) -> Tuple[bool, str]:
+def upload_reference_audio(
+    api_key: str,
+    model: str,
+    custom_name: str,
+    text: str,
+    file_name: str,
+    file_bytes: bytes,
+) -> Tuple[bool, str]:
     try:
         data = {"model": model, "customName": custom_name, "text": text}
         files = {"file": (file_name, io.BytesIO(file_bytes))}
@@ -50,6 +62,29 @@ def upload_reference_audio(api_key: str, model: str, custom_name: str, text: str
         payload = resp.json()
         uri = payload.get("uri", "")
         return (True, uri) if uri else (False, f"上传成功但未返回 uri：{payload}")
+    except Exception as exc:
+        return False, str(exc)
+
+
+def transcribe_reference_audio(
+    api_key: str,
+    model: str,
+    file_name: str,
+    file_bytes: bytes,
+) -> Tuple[bool, str]:
+    """
+    Use SiliconFlow transcription API to auto-recognize the reference audio text.
+    Docs indicate multipart/form-data with file + model, and file size <= 50MB / duration <= 1 hour.
+    """
+    try:
+        files = {"file": (file_name, io.BytesIO(file_bytes))}
+        data = {"model": model}
+        resp = requests.post(TRANSCRIBE_URL, headers=headers(api_key), files=files, data=data, timeout=300)
+        if resp.status_code >= 400:
+            return False, f"{resp.status_code}: {resp.text}"
+        payload = resp.json()
+        text = payload.get("text", "")
+        return (True, text) if text else (False, f"转写成功但未返回 text：{payload}")
     except Exception as exc:
         return False, str(exc)
 
@@ -66,8 +101,15 @@ def fetch_voice_list(api_key: str) -> Tuple[bool, Any]:
         return False, str(exc)
 
 
-def create_speech(api_key: str, model: str, input_text: str, voice: str,
-                  response_format: str, speed: float, gain: int) -> Tuple[bool, bytes | str]:
+def create_speech(
+    api_key: str,
+    model: str,
+    input_text: str,
+    voice: str,
+    response_format: str,
+    speed: float,
+    gain: int,
+) -> Tuple[bool, bytes | str]:
     try:
         payload = {
             "model": model,
@@ -92,14 +134,17 @@ def create_speech(api_key: str, model: str, input_text: str, voice: str,
 
 
 def mime_for(fmt: str) -> str:
-    return {"mp3": "audio/mpeg", "wav": "audio/wav", "opus": "audio/ogg", "pcm": "application/octet-stream"}.get(
-        fmt, "application/octet-stream"
-    )
+    return {
+        "mp3": "audio/mpeg",
+        "wav": "audio/wav",
+        "opus": "audio/ogg",
+        "pcm": "application/octet-stream",
+    }.get(fmt, "application/octet-stream")
 
 
 st.set_page_config(page_title="SiliconFlow 声音克隆小应用", page_icon="🎙️", layout="wide")
 st.title("SiliconFlow 声音克隆小应用")
-st.caption("上传参考音频 → 获取音色 URI → 输入文本生成语音")
+st.caption("上传参考音频 → 自动识别文本或手动输入 → 获取音色 URI → 输入文本生成语音")
 
 API_KEY = get_secret("SILICONFLOW_API_KEY")
 APP_PASSWORD = get_secret("APP_PASSWORD")
@@ -114,6 +159,7 @@ with st.sidebar:
     st.divider()
     st.write("API Key：", "已配置" if API_KEY else "未配置")
     st.write("上传接口：", "POST /v1/uploads/audio/voice")
+    st.write("转写接口：", "POST /v1/audio/transcriptions")
     st.write("列表接口：", "GET /v1/audio/voice/list")
     st.write("生成接口：", "POST /v1/audio/speech")
 
@@ -127,16 +173,48 @@ if "last_uri" not in st.session_state:
     st.session_state.last_uri = ""
 if "last_uploaded_model" not in st.session_state:
     st.session_state.last_uploaded_model = UPLOAD_MODELS[0]
+if "reference_text" not in st.session_state:
+    st.session_state.reference_text = ""
 
 tab_upload, tab_list, tab_generate = st.tabs(["上传参考音频", "音色列表", "生成语音"])
 
 with tab_upload:
     st.subheader("上传参考音频")
-    st.write("参考音频尽量选择干净、单人声、无背景音乐的 5 到 20 秒片段，文本必须和音频内容一致。")
+    st.write("参考音频尽量选择干净、单人声、无背景音乐的 5 到 20 秒片段。转写文件需满足官方限制：时长不超过 1 小时、大小不超过 50MB。")
     upload_model = st.selectbox("上传模型", UPLOAD_MODELS, index=0)
+    transcribe_model = st.selectbox("自动识别模型", TRANSCRIBE_MODELS, index=0)
     custom_name = st.text_input("customName", placeholder="例如：zhangsan_voice")
-    reference_text = st.text_area("参考音频对应文本", height=140, placeholder="请填写与音频逐字一致的文本")
     ref_file = st.file_uploader("参考音频文件", type=["mp3", "wav", "m4a", "flac", "ogg", "aac", "mp4"])
+
+    auto_col, tip_col = st.columns([1, 2])
+    with auto_col:
+        auto_btn = st.button("自动识别参考音频文本")
+    with tip_col:
+        st.caption("点击后会把识别结果自动填入下面的文本框，你也可以继续手动修改。")
+
+    if auto_btn:
+        if ref_file is None:
+            st.error("请先选择参考音频文件。")
+        else:
+            file_bytes = ref_file.getvalue()
+            ok, result = transcribe_reference_audio(
+                api_key=API_KEY,
+                model=transcribe_model,
+                file_name=ref_file.name,
+                file_bytes=file_bytes,
+            )
+            if ok:
+                st.session_state.reference_text = result
+                st.success("识别成功，已自动填入文本框。")
+            else:
+                st.error(f"识别失败：{result}")
+
+    reference_text = st.text_area(
+        "参考音频对应文本",
+        height=140,
+        key="reference_text",
+        placeholder="可先点击自动识别，再微调为与音频逐字一致的文本",
+    )
 
     if st.button("上传并生成 URI", type="primary"):
         if not custom_name.strip():
@@ -152,7 +230,7 @@ with tab_upload:
                 custom_name=custom_name.strip(),
                 text=reference_text.strip(),
                 file_name=ref_file.name,
-                file_bytes=ref_file.read(),
+                file_bytes=ref_file.getvalue(),
             )
             if ok:
                 st.success("上传成功")
@@ -196,6 +274,8 @@ with tab_list:
 
 with tab_generate:
     st.subheader("生成语音")
+    st.write("选择一个音色 URI，再输入你想让它说的话。")
+
     voices = st.session_state.voices
     display_map: Dict[str, Dict[str, Any]] = {}
     options: List[str] = []
@@ -214,7 +294,11 @@ with tab_generate:
         default_voice_uri = st.session_state.last_uri
         default_tts_model = st.session_state.last_uploaded_model or TTS_MODELS[0]
 
-    manual_voice_uri = st.text_input("voice URI", value=default_voice_uri, placeholder="speech:your-voice-name:xxx:xxx")
+    manual_voice_uri = st.text_input(
+        "voice URI",
+        value=default_voice_uri,
+        placeholder="speech:your-voice-name:xxx:xxx",
+    )
     tts_model = st.selectbox(
         "TTS 模型",
         TTS_MODELS,
@@ -263,7 +347,7 @@ with tab_generate:
                 st.error(f"生成失败：{result}")
 
 with st.expander("使用提示"):
-    st.write("1. 先上传参考音频，拿到 URI。")
-    st.write("2. 去音色列表刷新，确认记录是否存在。")
-    st.write("3. 去生成语音里选择音色并输入文本。")
-    st.write("4. 如果失败，优先检查 API Key、URI 和模型是否匹配。")
+    st.write("1. 先上传参考音频，必要时先点‘自动识别参考音频文本’。")
+    st.write("2. 识别结果会自动填入文本框，你可以再检查一遍。")
+    st.write("3. 文本尽量与音频逐字一致，这会明显影响上传后的克隆效果。")
+    st.write("4. 如果识别失败，先检查音频文件是否过大，是否超过官方 50MB / 1 小时限制。")

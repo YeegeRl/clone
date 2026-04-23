@@ -1,5 +1,8 @@
 # SiliconFlow Voice Clone Mini App
 
+## New feature
+Reference audio text can now be auto-transcribed using SiliconFlow ASR before uploading.
+
 ## Local run
 ```bash
 pip install -r requirements.txt
