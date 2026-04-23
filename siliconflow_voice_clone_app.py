@@ -14,8 +14,9 @@ SPEECH_URL = f"{BASE_URL}/audio/speech"
 TRANSCRIBE_URL = f"{BASE_URL}/audio/transcriptions"
 
 UPLOAD_MODELS = [
-    "fnlp/MOSS-TTSD-v0.5",
+    
     "FunAudioLLM/CosyVoice2-0.5B",
+    "fnlp/MOSS-TTSD-v0.5",
 ]
 
 TTS_MODELS = [
